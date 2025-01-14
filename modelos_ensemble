@@ -1,0 +1,401 @@
+rm(list=ls())
+
+library(readxl)
+library(tidyverse)# ggplot(), %>%, mutate(), and friends
+library(broom) #Converte modelos em data frame
+library(ggplot2)
+library(ggfortify) #melhorar o ggplot
+library(ggthemes)
+library("growthrates")
+library(growthmodels)
+library(ggpubr) # 'ggplot2' Based Publication Ready Plots
+library(vcd)
+library(Epi) #para dados epidemiologicos
+library(AER)
+library(ggpmisc)
+library(dlookr) #: Tools for Data tempognosis, Exploration, Transformation
+library(gridExtra) #Miscellaneous Functions for "Grid" Graphics
+library(magrittr)# pipe operations
+library(DT)
+library(dygraphs)
+library(e1071)
+library(gss) #Subset of data from the General Social Survey
+library(workflows) # Modeling Workflows
+library(patchwork)#unir graficos ggplot
+library(deSolve) #Para ed ordinarias, eq algebricas e diferenciais
+library(lubridate) # make it easier to parse and manipulate dates
+library(svglite) #para renderizar gráficos em SVG
+library(xml2)
+library(showtext)
+library(rlang)
+
+
+
+sysfonts::font_add_google(name = "Open Sans")
+
+sysfonts::font_add_google(name = "Lato")
+
+showtext::showtext_auto()
+
+path <- "data/dadossimulados.xlsx"
+
+excel_sheets <- readxl::excel_sheets(path)
+
+dados <- readxl::read_excel(path, sheet = excel_sheets[1])
+
+# # Deixando so os primeiros 266 dias
+# dados <- dados %>%
+#   dplyr::filter(tempo <=266)
+
+# Separando os dados em controle (até o dia 44) e tratamento (a partir do dia 45 até 266)
+dados_controle <- dados %>%
+  dplyr::filter(tempo <= 44)
+dados_treinamento <- dados %>%
+  dplyr::filter(tempo >=45)
+
+#Intervenções governamentais
+
+excel_sheets <- readxl::excel_sheets(path)
+
+excel_sheets |>
+  purrr::map(
+    .x = _,
+    .f = ~ readxl::read_excel(path = path, sheet = .x) |>
+      dplyr::select(-date)
+  ) |>
+  purrr::reduce(.f = dplyr::left_join) |>
+  dplyr::filter(
+    tempo <= 266
+  ) |>
+  tidyr::pivot_longer(
+    cols = -tempo,
+    names_to = "Estado",
+    values_to = "Óbitos"
+  ) |>
+  janitor::clean_names() |>
+  dplyr::mutate(
+    estado = dplyr::case_when(
+      estado == "obitos_ma" ~ "Manaus",
+      estado == "obitos_simulados" ~ "Recife",
+      estado == "obitos_sp" ~ "São Paulo"
+    )
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(x = tempo, y = obitos, color = estado)) +
+  ggplot2::geom_line(linewidth = 1.2) +
+  ggplot2::theme_bw() +
+  ggplot2::geom_vline(
+    xintercept = 45,
+    linetype = "dashed",
+    color = "#694642",
+    linewidth = 1.2
+  ) +
+  ggplot2::theme(
+    strip.background = ggplot2::element_blank(),
+    strip.text = ggplot2::element_text(
+      size = 16,
+      family = "Open Sans"
+    ),
+    legend.title = ggplot2::element_text(
+      hjust = 0.5,
+      size = 16,
+      family = "Open Sans"
+    ),
+    legend.text = ggplot2::element_text(
+      size = 14,
+      family = "Lato"
+    ),
+    axis.text = element_text(
+      colour = "black",
+      size = 20,
+      family = "Open Sans"
+    ),
+    axis.title = element_text(
+      colour = "black",
+      size = 22,
+      family = "Open Sans"
+    ),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(
+      size = 10,
+      family = "Open Sans"
+    )
+  ) +
+  ggplot2::scale_x_continuous(
+    breaks = seq(0, 280, 45)
+  ) +
+  ggplot2::scale_y_continuous(
+    labels = scales::number_format(big.mark = ".", decimal.mark = ",")
+  ) +
+  ggplot2::scale_color_manual(
+    values = c(
+      "Manaus" = "#E84A5FFF",
+      "Recife" = "#8FDA04FF",
+      "São Paulo" = "#132157FF"
+    )
+  ) +
+  ggplot2::labs(
+    x = "tempos",
+    y = "Nº de óbitos acumulados",
+    color = NULL
+  )
+
+
+
+#################### GOMPERTZ #################################
+
+# Parâmetros iniciais para ajustar o modelo Gompertz aos dados de controle
+
+p1r <- c(y0 = 4, mumax = 0.5, K = 1610)
+lower1r <- c(y0 = 0, mumax = 0, K = 1)
+upper1r <- c(y0 = 30, mumax = 7, K = 2000)
+
+# Ajustando o modelo Gompertz
+gompertz <- fit_growthmodel(
+  FUN = grow_gompertz,
+  p = p1r,
+  dados_controle$tempo,
+  dados_controle$D,
+  lower = lower1r,
+  upper = upper1r
+)
+
+# Parâmetros estimados para previsão com base nos dados de controle
+par_gompertz <- coef(gompertz)
+
+# Estimando o comportamento contrafactual após a intervenção no tempo 44
+tempo <- seq(1,100)  # tempos após a intervenção
+prev_gomp_treino <- grow_gompertz(tempo, par_gompertz)
+
+plot(prev_gomp_treino)
+
+#Richards
+
+# Definindo os parâmetros iniciais, limites inferior e superior
+
+p2r <- c(y0 = 4, mumax = 0.4, K = 1610, beta = 1)
+lower2r <- c(y0 = 1, mumax = 0, K = 1, beta = 0)
+upper2r <- c(y0 = 50, mumax = 7, K = 3000, beta = 3)
+
+# Ajustando o modelo Richards
+richards <- fit_growthmodel(FUN = grow_richards, p = p2r, dados_controle$tempo, dados_controle$D,
+                                lower = lower2r, upper = upper2r)
+
+# Parâmetros estimados para previsão com base nos dados de controle
+par_richards <- coef(richards)
+
+# Estimando o comportamento contrafactual após a intervenção no tempo 44
+prev_rich_treino <- grow_richards(tempo, par_richards)
+
+plot (prev_rich_treino)
+
+
+# Logistico
+
+
+p3r <- c(y0 = 4, mumax = 0.05, K = 1610)
+lower3r <- c(y0 = 1, mumax = 0.02, K = 0)
+upper3r <- c(y0 = 10, mumax = 1, K = 5000)
+
+# Ajustando o modelo logístico
+logistico <- fit_growthmodel(FUN = grow_logistic, p = p3r, dados_controle$tempo, dados_controle$D,
+                                 lower = lower3r, upper = upper3r)
+plot(logistico)
+
+# Parâmetros estimados para previsão com base nos dados de controle
+par_logistico <- coef(logistico)
+
+# Estimando o comportamento contrafactual após a intervenção no tempo 44
+prev_log_treino <- grow_logistic(tempo, par_logistico)
+
+plot(prev_log_treino)
+
+y_log_rec <- prev_log_treino[,c(2)]
+y_log_df <- data.frame(tempo = tempo, previsao = y_log_rec)
+
+
+#### Metricas de Erro --------------------------------------------------------
+
+# Gompertz
+
+# Calcular as previsões do modelo Gompertz para os dados de treinamento
+prev_gomp_treino <- grow_gompertz(tempo, par_gompertz)
+
+# Calcular o MSE (Erro Quadrático Médio) para o modelo Gompertz
+mse_gompertz <- mean((dados_treinamento$D - prev_gomp_treino)^2)
+
+# Calcular o RMSE (Raiz Quadrada do Erro Quadrático Médio) para o modelo Gompertz
+rmse_gompertz <- sqrt(mse_gompertz)
+
+# Calcular o MAPE (Erro Percentual Médio Absoluto) para o modelo Gompertz
+mape_gompertz <- mean(abs((dados_treinamento$D - prev_gomp_treino) / dados_treinamento$D)) * 100
+
+# Exibir os resultados
+mse_gompertz
+rmse_gompertz
+mape_gompertz
+
+# Richards
+
+# Calcular as previsões do modelo Richards para os dados de treinamento
+prev_rich_treino <- grow_richards(tempo, par_richards)
+
+# Calcular o MSE (Erro Quadrático Médio)
+mse_richards <- mean((dados_treinamento$D - prev_rich_treino)^2)
+
+# Calcular o RMSE (Raiz Quadrada do Erro Quadrático Médio)
+rmse_richards <- sqrt(mse_richards)
+
+# Calcular o MAPE (Erro Percentual Médio Absoluto)
+mape_richards <- mean(abs((dados_treinamento$D - prev_rich_treino) / dados_treinamento$D)) * 100
+
+# Exibir os resultados
+mse_richards
+rmse_richards
+mape_richards
+
+# Logistico
+
+# Calcular as previsões
+prev_log_treino <- grow_logistic(tempo, par_logistico)
+
+# Calcular o MSE (Erro Quadrático Médio)
+mse_logistico <- mean((dados_treinamento$D - prev_log_treino)^2)
+
+# Calcular o RMSE (Raiz Quadrada do Erro Quadrático Médio)
+rmse_logistico <- sqrt(mse_logistico)
+
+# Calcular o MAPE (Erro Percentual Médio Absoluto)
+mape_logistico <- mean(abs((dados_treinamento$D - prev_log_treino) / dados_treinamento$D)) * 100
+
+# Exibir os resultados
+mse_logistico
+rmse_logistico
+mape_logistico
+
+
+
+########################### REPLICAS BOOTSTRAP PARA ENSEMBLE ###############################
+
+n=length(tempo)
+ssrL_rec=(logistico@fit$ssr)/n
+ssrG_rec=(gompertz@fit$ssr)/n
+ssrR_rec=(richards@fit$ssr)/n
+
+
+###################calculando pesos normalizados
+#a soma dos inversos dos quadrados médios dos resíduos indica quão bem
+#cada modelo se ajusta aos dados.
+soma_inverso_rec=(1/ssrL_rec)+(1/ssrG_rec)+(1/ssrR_rec)
+wL=(1/ssrL_rec)/soma_inverso_rec #peso logistico
+wG=(1/ssrG_rec)/soma_inverso_rec #peso Gompertz
+wR=(1/ssrR_rec)/soma_inverso_rec #peso Richards
+
+# Cálculo dos resíduos ajustados para cada modelo
+cL = logistico@fit$residuals + logistico@obs$y  # Resíduos ajustados - Logístico
+cG = gompertz@fit$residuals + gompertz@obs$y   # Resíduos ajustados - Gompertz
+cR = richards@fit$residuals + richards@obs$y   # Resíduos ajustados - Richards
+
+# Cálculo da média ponderada dos resíduos
+media_residuos = wL * cL + wG * cG + wR * cR
+
+# Plotagem da métempo ponderada dos resíduos
+plot(media_residuos, type = "l", col = "blue", lty = 1, lwd = 2,
+     xlab = "tempos corridos", ylab = "Média ponderada dos Resíduos",
+     main = "Média ponderada dos Resíduos")
+
+# Cálculo da previsão métempo ponderada
+media_previsao = wL * prev_log_treino + wG * prev_gomp_treino + wR * prev_rich_treino
+ensemble_previsao_media<- media_previsao[,c(2)]
+
+
+# Plotagem da série temporal original e previsão média ponderada
+plot(dados$tempo, dados$D, type = "l", col = "lightblue", lty = 1, lwd = 2,
+     xlab = "tempos corridos", ylab = "Óbitos acumulados",
+     main = "Óbitos Observados e Ensemble",
+     ylim = c(0, 6000))  # Ajustando o limite do eixo y até 10000
+lines(tempo, y_prev_metempo_rec, col = "darkblue", lty = 1, lwd = 2)
+abline(v = 45, col = "purple", lty = 2)# Estimando o comportamento contrafactual de toda a serie
+text(x = 45, y = 2000, label = "Lockdown", col = "purple", cex = 1, pos = 3, srt = 90)
+
+# Calcular a diferença entre os valores observados e as previsões
+diferenca_ensemble <- dados$D - ensemble_previsao_media
+
+# Metricas
+# Calcular o MSE para a média ponderada
+mse_media_ponderada<- mean((dados$D - ensemble_previsao_media)^2)
+
+# Calcular o RMSE para a média ponderada
+rmse_media_ponderada<- sqrt(mse_metempo_rec)
+
+# Calcular o MAPE para a média ponderada
+mape_media_ponderada <- mean(abs((dados$D - ensemble_previsao_media) / dados$D))
+
+# Exibir os resultados
+mse_media_ponderada
+rmse_media_ponderada
+mape_media_ponderada
+
+
+
+# Função para calcular métricas de desempenho
+calculo_metricas <- function(obs, prev) {
+  mse <- mean((obs - prev)^2)
+  rmse <- sqrt(mse)
+  mape <- mean(abs((obs - prev) / obs)) * 100
+  return(c(mse, rmse, mape))
+}
+
+# Número de réplicas bootstrap
+n_replicas <- 1000
+
+# Armazenar métricas de desempenho em cada iteração
+metricas_bootstrap <- matrix(NA, n_replicas, 3)
+
+# Loop para realizar o bootstrap
+for (i in 1:n_replicas) {
+  # Amostragem com reposição dos resíduos
+  reamostragem_residuos <- sample(media_residuos, replace = TRUE)
+
+  # Calcular previsão bootstrap
+  previsao_bootstrap <- media_previsao + reamostragem_residuos
+
+  # Calcular métricas de desempenho
+  metricas_bootstrap[i, ] <- calculo_metricas(dados$D, previsao_bootstrap)
+}
+
+# Calcular intervalos de confiança
+intervalos_confianca <- apply(metricas_bootstrap, 2, function(x) quantile(x, c(0.025, 0.975)))
+
+# Exibir os resultados
+print("Intervalos de Confiança (2.5% - 97.5%) para as Métricas de Desempenho:")
+colnames(intervalos_confianca) <- c("MSE", "RMSE", "MAPE")
+print(intervalos_confianca)
+
+ensemble_previsao_media<- media_previsao[,c(2)]
+intervalos_confianca <- matrix(NA, nrow = length(tempo), ncol = 2)
+intervalos_confianca[, 1] <- ensemble_previsao_media- qt(0.975, length(ensemble_previsao_media)) * (sd(media_previsao)/sqrt(n_replicas))
+intervalos_confianca[, 2] <- ensemble_previsao_media+ qt(0.975, length(ensemble_previsao_media)) * (sd(media_previsao)/sqrt(n_replicas))
+
+
+
+df_plot_rec <- data.frame(dia = tempo,
+                          obitos_simulados = dados$D[1:100],
+                          previsao_media_ponderada = ensemble_previsao_media,
+                          limite_inferior = intervalos_confianca[, 1],
+                          limite_superior = intervalos_confianca[, 2])
+
+# Criar o gráfico usando o ensemble e o IC bootstrap
+ggplot(df_plot_rec, aes(x = tempo)) +
+  geom_line(aes(y = obitos_simulados), color = "lightblue", linetype = "solid", size = 1) +
+  geom_line(aes(y = previsao_media_ponderada), color = "darkblue", linetype = "solid", size = 1) +
+  geom_path(aes(y = limite_inferior), linetype = "dashed", color = "red", size = 0.5) +
+  geom_path(aes(y = limite_superior), linetype = "dashed", color = "red", size = 0.5) +
+  geom_vline(xintercept = 45, linetype = "dashed", color = "purple", linewidth = 0.5) +
+  labs(title = "Estimativa Ensemble com Intervalo de Confiança",
+       x = "tempos corridos",
+       y = "Óbitos acumulados") +
+  theme_minimal() +
+  expand_limits(y = 0)
+
+
